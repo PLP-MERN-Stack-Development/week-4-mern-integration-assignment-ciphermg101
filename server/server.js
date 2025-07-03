@@ -1,78 +1,70 @@
-// server.js - Main server file for the MERN blog application
-
-// Import required modules
+require('module-alias/register');
 const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const dotenv = require('dotenv');
 const path = require('path');
+const connectDB = require('@config/db');
+const { securityHeaders, corsMiddleware, sanitizeData, publicApiLimiter } = require('@middleware/security');
+const { globalErrorHandler, notFound } = require('@utils/errorHandler');
+const logger = require('@utils/logger');
 
-// Import routes
-const postRoutes = require('./routes/posts');
-const categoryRoutes = require('./routes/categories');
-const authRoutes = require('./routes/auth');
-
-// Load environment variables
-dotenv.config();
-
-// Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(securityHeaders);
+app.use(corsMiddleware);
+app.set('trust proxy', 1);
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(sanitizeData);
 
-// Log requests in development mode
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url}`);
-    next();
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.originalUrl}`, {
+    ip: req.ip,
+    userAgent: req.get('user-agent')
+  });
+  next();
+});
+
+app.use('/api', publicApiLimiter);
+
+// API routes
+const apiRoutes = [
+  require('./src/routes/auth'),
+  require('./src/routes/posts'),
+  require('./src/routes/categories')
+];
+
+apiRoutes.forEach(route => app.use('/api', route));
+
+// Handle 404 for API routes
+app.use('/api', notFound);
+
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../client/build')));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.resolve(__dirname, '../client/build', 'index.html'));
   });
 }
 
-// API routes
-app.use('/api/posts', postRoutes);
-app.use('/api/categories', categoryRoutes);
-app.use('/api/auth', authRoutes);
+// Global error handler
+app.use(globalErrorHandler);
 
-// Root route
-app.get('/', (req, res) => {
-  res.send('MERN Blog API is running');
-});
+const PORT = process.env.PORT || 5000;
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.statusCode || 500).json({
-    success: false,
-    error: err.message || 'Server Error',
-  });
-});
-
-// Connect to MongoDB and start server
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
+const startServer = async () => {
+  try {
+    await connectDB();
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
-  })
-  .catch((err) => {
-    console.error('Failed to connect to MongoDB', err);
+  } catch (error) {
+    console.error('Failed to start server:', error);
     process.exit(1);
-  });
+  }
+};
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Promise Rejection:', err);
-  // Close server & exit process
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer();
+}
 
-module.exports = app; 
+module.exports = app;
